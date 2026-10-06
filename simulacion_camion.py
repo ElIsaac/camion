@@ -13,8 +13,12 @@ PROBABILIDAD_LLEGADA_MINIMA_POR_MINUTO = 0.05
 PROBABILIDAD_LLEGADA_MAXIMA_POR_MINUTO = 0.30
 
 MINUTOS_JORNADA = HORAS_JORNADA * 60
-POSICION_TERMINAL = TOTAL_ESTACIONES + 1
-MINUTOS_POR_VUELTA = TOTAL_ESTACIONES * MINUTOS_ENTRE_ESTACIONES
+ESTACION_TERMINAL = 1
+ULTIMA_ESTACION = TOTAL_ESTACIONES
+IDA = 1
+VUELTA = -1
+# ruta lineal: va de la 1 a la 32 y regresa en reversa de la 32 a la 1 (31 tramos de ida + 31 de vuelta)
+MINUTOS_POR_VUELTA = 2 * (TOTAL_ESTACIONES - 1) * MINUTOS_ENTRE_ESTACIONES
 ULTIMA_SALIDA_POSIBLE = MINUTOS_JORNADA - MINUTOS_POR_VUELTA
 
 TipoEvento = Literal["salida", "parada", "terminal"]
@@ -23,7 +27,7 @@ TipoEvento = Literal["salida", "parada", "terminal"]
 @dataclass
 class Pasajero:
     minuto_llegada: int
-    posicion_destino: int = 0
+    estacion_destino: int
     minuto_abordaje: int = 0
 
 
@@ -32,13 +36,15 @@ class Estacion:
     numero_estacion: int
     probabilidad_llegada_por_minuto: float
     ultimo_minuto_generado: int = 0
-    pasajeros_esperando: list[Pasajero] = field(default_factory=list)
+    esperando_ida: list[Pasajero] = field(default_factory=list)
+    esperando_vuelta: list[Pasajero] = field(default_factory=list)
 
 
 @dataclass
 class Camion:
     numero_camion: int
     en_ruta: bool = False
+    sentido: int = IDA
     pasajeros_a_bordo: list[Pasajero] = field(default_factory=list)
 
 
@@ -55,6 +61,7 @@ class RegistroParada:
     minuto: int
     numero_camion: int
     numero_estacion: int
+    sentido: int
     subieron: int
     bajaron: int
     ocupacion: int
@@ -173,42 +180,48 @@ class SimulacionTransporte:
             return
         camion = camiones_disponibles[0]
         camion.en_ruta = True
-        self.atender_parada(camion, 1, minuto)
+        camion.sentido = IDA
+        self.atender_parada(camion, ESTACION_TERMINAL, minuto)
 
-    def atender_parada(self, camion: Camion, posicion: int, minuto: int) -> None:
-        """El camion para en una estacion: llegan pasajeros, bajan los que van ahi, suben los que caben y se agenda la siguiente parada.
+    def atender_parada(self, camion: Camion, numero_estacion: int, minuto: int) -> None:
+        """El camion para en una estacion: llegan pasajeros, bajan los que van ahi, suben los que van en su sentido
+        y se agenda la siguiente parada. En la ultima estacion el camion se da la vuelta y regresa en reversa.
 
         Entradas:
             camion: camion que hace la parada.
-            posicion: numero de estacion (1 a TOTAL_ESTACIONES).
+            numero_estacion: numero de estacion (1 a TOTAL_ESTACIONES).
             minuto: minuto de la parada.
-        Modifica: pasajeros del camion y de la estacion, historial_paradas, pasajeros_transportados y la cola de eventos.
+        Modifica: pasajeros del camion y de la estacion, camion.sentido (en la ultima estacion), historial_paradas,
+            pasajeros_transportados y la cola de eventos.
         Retorna: nada.
         """
-        estacion = self.estaciones[posicion - 1]
+        estacion = self.estaciones[numero_estacion - 1]
         self.generar_llegadas(estacion, minuto)
-        bajaron = self.bajar_pasajeros(camion, posicion)
-        subieron = self.subir_pasajeros(camion, estacion, posicion, minuto)
+        bajaron = self.bajar_pasajeros(camion, numero_estacion)
+        if numero_estacion == ULTIMA_ESTACION:
+            camion.sentido = VUELTA
+        subieron = self.subir_pasajeros(camion, estacion, minuto)
         self.historial_paradas.append(RegistroParada(
             minuto=minuto,
             numero_camion=camion.numero_camion,
-            numero_estacion=estacion.numero_estacion,
+            numero_estacion=numero_estacion,
+            sentido=camion.sentido,
             subieron=subieron,
             bajaron=bajaron,
             ocupacion=len(camion.pasajeros_a_bordo),
-            quedaron_esperando=len(estacion.pasajeros_esperando),
+            quedaron_esperando=len(self.fila_del_sentido(estacion, camion.sentido)),
             es_terminal=False,
         ))
 
-        siguiente_posicion = posicion + 1
+        siguiente_estacion = numero_estacion + camion.sentido
         siguiente_minuto = minuto + MINUTOS_ENTRE_ESTACIONES
-        if siguiente_posicion == POSICION_TERMINAL:
+        if siguiente_estacion == ESTACION_TERMINAL:
             self.programar_evento(siguiente_minuto, "terminal", camion)
         else:
-            self.programar_evento(siguiente_minuto, "parada", camion, siguiente_posicion)
+            self.programar_evento(siguiente_minuto, "parada", camion, siguiente_estacion)
 
     def llegar_a_terminal(self, camion: Camion, minuto: int) -> None:
-        """El camion llega a la terminal: bajan todos los pasajeros y el camion queda libre.
+        """El camion regresa a la terminal (estacion 1): bajan todos los pasajeros y el camion queda libre.
 
         Entradas:
             camion: camion que llega.
@@ -216,11 +229,12 @@ class SimulacionTransporte:
         Modifica: vacia el camion, lo marca como libre, agrega el registro a historial_paradas y los pasajeros a pasajeros_transportados.
         Retorna: nada.
         """
-        bajaron = self.bajar_pasajeros(camion, POSICION_TERMINAL)
+        bajaron = self.bajar_pasajeros(camion, ESTACION_TERMINAL)
         self.historial_paradas.append(RegistroParada(
             minuto=minuto,
             numero_camion=camion.numero_camion,
-            numero_estacion=1,
+            numero_estacion=ESTACION_TERMINAL,
+            sentido=VUELTA,
             subieron=0,
             bajaron=bajaron,
             ocupacion=len(camion.pasajeros_a_bordo),
@@ -232,49 +246,63 @@ class SimulacionTransporte:
     # ----- movimiento de pasajeros -----
 
     def generar_llegadas(self, estacion: Estacion, hasta_minuto: int) -> None:
-        """Genera al azar los pasajeros que llegaron a la estacion desde la ultima vez que se reviso.
+        """Genera al azar los pasajeros que llegaron a la estacion desde la ultima vez que se reviso; cada uno trae
+        un destino al azar y se forma en la fila de ida o de vuelta segun hacia donde va.
 
         Entradas:
             estacion: estacion donde llegan.
             hasta_minuto: minuto hasta el que se generan llegadas (sin incluirlo).
-        Modifica: agrega pasajeros a estacion.pasajeros_esperando y actualiza estacion.ultimo_minuto_generado.
+        Modifica: agrega pasajeros a estacion.esperando_ida o estacion.esperando_vuelta y actualiza estacion.ultimo_minuto_generado.
         Retorna: nada.
         """
+        otras_estaciones = [numero for numero in range(1, TOTAL_ESTACIONES + 1) if numero != estacion.numero_estacion]
         for minuto in range(estacion.ultimo_minuto_generado, hasta_minuto):
             if random.random() < estacion.probabilidad_llegada_por_minuto:
-                estacion.pasajeros_esperando.append(Pasajero(minuto_llegada=minuto))
+                pasajero = Pasajero(minuto_llegada=minuto, estacion_destino=random.choice(otras_estaciones))
+                sentido = IDA if pasajero.estacion_destino > estacion.numero_estacion else VUELTA
+                self.fila_del_sentido(estacion, sentido).append(pasajero)
         estacion.ultimo_minuto_generado = hasta_minuto
 
-    def bajar_pasajeros(self, camion: Camion, posicion: int) -> int:
-        """Baja del camion a los pasajeros cuyo destino es la posicion actual.
+    def fila_del_sentido(self, estacion: Estacion, sentido: int) -> list[Pasajero]:
+        """Da la fila de la estacion que corresponde a un sentido.
+
+        Entradas:
+            estacion: estacion a consultar.
+            sentido: IDA o VUELTA.
+        Modifica: nada.
+        Retorna: la lista de pasajeros esperando en ese sentido (la misma lista, no una copia).
+        """
+        return estacion.esperando_ida if sentido == IDA else estacion.esperando_vuelta
+
+    def bajar_pasajeros(self, camion: Camion, numero_estacion: int) -> int:
+        """Baja del camion a los pasajeros cuyo destino es la estacion actual.
 
         Entradas:
             camion: camion del que bajan.
-            posicion: posicion actual del camion.
+            numero_estacion: estacion donde esta el camion.
         Modifica: camion.pasajeros_a_bordo y pasajeros_transportados.
         Retorna: cuantos pasajeros bajaron.
         """
-        pasajeros_que_bajan = [pasajero for pasajero in camion.pasajeros_a_bordo if pasajero.posicion_destino == posicion]
-        camion.pasajeros_a_bordo = [pasajero for pasajero in camion.pasajeros_a_bordo if pasajero.posicion_destino != posicion]
+        pasajeros_que_bajan = [pasajero for pasajero in camion.pasajeros_a_bordo if pasajero.estacion_destino == numero_estacion]
+        camion.pasajeros_a_bordo = [pasajero for pasajero in camion.pasajeros_a_bordo if pasajero.estacion_destino != numero_estacion]
         self.pasajeros_transportados.extend(pasajeros_que_bajan)
         return len(pasajeros_que_bajan)
 
-    def subir_pasajeros(self, camion: Camion, estacion: Estacion, posicion: int, minuto: int) -> int:
-        """Sube a los pasajeros que esperan, en orden de llegada, hasta llenar el camion; a cada uno le asigna un destino al azar.
+    def subir_pasajeros(self, camion: Camion, estacion: Estacion, minuto: int) -> int:
+        """Sube a los pasajeros que esperan en el sentido del camion, en orden de llegada, hasta llenarlo.
 
         Entradas:
             camion: camion al que suben.
             estacion: estacion donde esperan.
-            posicion: posicion actual (el destino es posterior a esta).
             minuto: minuto de abordaje.
-        Modifica: camion.pasajeros_a_bordo, estacion.pasajeros_esperando y posicion_destino/minuto_abordaje de cada pasajero que sube.
+        Modifica: camion.pasajeros_a_bordo, la fila del sentido del camion en la estacion y minuto_abordaje de cada pasajero que sube.
         Retorna: cuantos pasajeros subieron.
         """
+        fila = self.fila_del_sentido(estacion, camion.sentido)
         lugares_disponibles = CAPACIDAD_CAMION - len(camion.pasajeros_a_bordo)
-        pasajeros_que_suben = estacion.pasajeros_esperando[:lugares_disponibles]
-        estacion.pasajeros_esperando = estacion.pasajeros_esperando[lugares_disponibles:]
+        pasajeros_que_suben = fila[:lugares_disponibles]
+        del fila[:lugares_disponibles]
         for pasajero in pasajeros_que_suben:
-            pasajero.posicion_destino = random.randint(posicion + 1, POSICION_TERMINAL)
             pasajero.minuto_abordaje = minuto
             camion.pasajeros_a_bordo.append(pasajero)
         return len(pasajeros_que_suben)

@@ -1,4 +1,4 @@
-from simulacion_camion import CAPACIDAD_CAMION, HORA_INICIO_JORNADA, SimulacionTransporte
+from simulacion_camion import CAPACIDAD_CAMION, HORA_INICIO_JORNADA, IDA, SimulacionTransporte
 
 
 def convertir_a_12_horas(horas_24: int) -> tuple[int, str]:
@@ -31,7 +31,7 @@ def formatear_hora(minuto: int) -> str:
 
 
 def imprimir_historial(simulacion: SimulacionTransporte) -> None:
-    """Imprime cada parada de cada camion: hora, estacion, suben, bajan, ocupacion y gente que se quedo.
+    """Imprime cada parada de cada camion: hora, estacion y sentido, suben, bajan, ocupacion y gente que se quedo.
 
     Entradas:
         simulacion: simulacion ya ejecutada.
@@ -40,7 +40,10 @@ def imprimir_historial(simulacion: SimulacionTransporte) -> None:
     """
     print("===== HISTORIAL DE PARADAS =====")
     for registro in simulacion.historial_paradas:
-        texto_estacion = "Terminal (estacion 1)" if registro.es_terminal else "Estacion " + str(registro.numero_estacion)
+        if registro.es_terminal:
+            texto_estacion = "Terminal (estacion 1)"
+        else:
+            texto_estacion = "Estacion " + str(registro.numero_estacion) + (" (ida)" if registro.sentido == IDA else " (vuelta)")
         linea = (formatear_hora(registro.minuto) + " | Camion " + str(registro.numero_camion) + " | " + texto_estacion
                  + " | suben " + str(registro.subieron) + ", bajan " + str(registro.bajaron)
                  + " | a bordo " + str(registro.ocupacion) + "/" + str(CAPACIDAD_CAMION))
